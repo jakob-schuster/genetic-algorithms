@@ -1,161 +1,86 @@
-use std::{ops::Index, str::from_utf8};
+use std::time::Duration;
 
-use itertools::Itertools;
-use rand::{
-    Rng, random_bool,
-    rngs::ThreadRng,
-    seq::{IndexedRandom, IteratorRandom, SliceRandom},
+use genetic::{RenderState, State};
+
+use color_eyre::Result;
+use crossterm::event::{self, Event};
+use ratatui::{
+    DefaultTerminal, Frame,
+    layout::{Constraint, Layout},
+    widgets::{Block, Padding, Paragraph, Row, Table},
 };
 
-type Element = String;
+mod genetic;
 
-/// Generate a new element totally randomly
-fn generate(length: usize, rng: &mut ThreadRng) -> Element {
-    let mut a = ('a'..='z').choose_multiple(rng, length);
-    a.shuffle(rng);
-    a.iter().collect()
+fn main() -> Result<()> {
+    color_eyre::install()?;
+    let terminal = ratatui::init();
+    let result = run(terminal);
+    ratatui::restore();
+    result
 }
 
-/// Calculate the fitness of an element, against a target
-fn absolute_fitness(target: &Element, guess: &Element) -> f32 {
-    // hamming distance
-    let mut matching = 0;
-    for i in 0..target.len() {
-        if target.as_bytes()[i] == guess.as_bytes()[i] {
-            matching += 1;
+fn run(mut terminal: DefaultTerminal) -> Result<()> {
+    let mut state = State::new(&"Hello there good sir.".to_string(), 200, 100, 0.01);
+
+    loop {
+        let state1 = state.update();
+        terminal.draw(|frame| render(frame, &state1.get_render_state()))?;
+        state = state1;
+
+        if event::poll(Duration::from_millis(10))? {
+            match event::read()? {
+                Event::FocusGained => {}
+                Event::FocusLost => {}
+                Event::Key(key_event) => match key_event.code {
+                    event::KeyCode::Char('q') | event::KeyCode::Esc => break Ok(()),
+                    _ => {}
+                },
+                Event::Mouse(_) => {}
+                Event::Paste(_) => {}
+                Event::Resize(_, _) => {}
+            }
         }
     }
-
-    matching as f32 / target.len() as f32
 }
 
-/// Two elements reproduce to make a new element
-fn reproduce(rng: &mut ThreadRng, e1: &Element, e2: &Element) -> Element {
-    let mut new_element = vec![];
-    for i in 0..e1.len() {
-        new_element.push(*[e1.as_bytes()[i], e2.as_bytes()[i]].choose(rng).unwrap());
-    }
-    String::from_utf8(new_element).unwrap()
-}
+fn render(frame: &mut Frame, state: &RenderState) {
+    let vertical = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(5),
+        Constraint::Length(5),
+        Constraint::Length(15),
+    ]);
 
-/// Random mutations are applied to an element
-fn mutate(rng: &mut ThreadRng, element: &Element, mutation_rate: f32) -> Element {
-    let mut new_element = vec![];
-    for c in element.chars() {
-        new_element.push(if random_bool(mutation_rate as f64) {
-            // pick a random letter
-            ('a'..='z').choose(rng).unwrap()
-        } else {
-            c
-        });
-    }
+    let [area_0, area_1, area_2, area_3] = vertical.areas(frame.area());
 
-    new_element.iter().collect()
-}
+    frame.render_widget(
+        "Press [q] to quit, or hold any other key to advance simulation",
+        area_0,
+    );
 
-fn normalise_fitnesses(population: &[(Element, f32)]) -> Vec<(Element, f32)> {
-    let sum = population
-        .iter()
-        .fold(0.0, |acc, (_, fitness)| acc + fitness);
+    let text = Paragraph::new(state.top_word.to_string()).block(
+        Block::bordered()
+            .padding(Padding::proportional(1))
+            .title(" Current top phrase "),
+    );
+    frame.render_widget(text, area_1);
 
-    population
-        .iter()
-        .map(|(element, fitness)| (element.clone(), *fitness / sum))
-        .collect()
-}
+    let generations_string = state.generation.to_string();
+    let fitness_string = state.average_fitness.to_string();
+    let population_string = state.total_population.to_string();
+    let mutation_string = format!("{}%", (state.mutation_rate * 100.0).floor());
+    let text = Table::new(
+        [
+            Row::new(["total generations:", &generations_string]),
+            Row::new(["average fitness:", &fitness_string]),
+            Row::new(["total population:", &population_string]),
+            Row::new(["mutation rate:", &mutation_string]),
+        ],
+        [20, 10],
+    );
+    frame.render_widget(text, area_2);
 
-fn generate_new_population(
-    rng: &mut ThreadRng,
-    population: &[(Element, f32)],
-    mating_pool_size: usize,
-    population_size: usize,
-    mutation_rate: f32,
-) -> Vec<Element> {
-    let mating_pool = population
-        .iter()
-        // .inspect(|(element, fitness)| {
-        //     println!(
-        //         "repeating {} with fitness {} {} times",
-        //         element,
-        //         fitness,
-        //         (fitness * mating_pool_size as f32).ceil() as usize
-        //     )
-        // })
-        .flat_map(|(element, fitness)| {
-            [element].repeat((fitness * mating_pool_size as f32).ceil() as usize)
-        })
-        .collect::<Vec<_>>();
-
-    println!("mating pool size {}", mating_pool.len());
-
-    let mut new_population = vec![];
-    for _ in 0..population_size {
-        let a = mating_pool.choose(rng).unwrap();
-        let mut b = mating_pool.choose(rng).unwrap();
-        while b == a {
-            b = mating_pool.choose(rng).unwrap();
-        }
-
-        let c = reproduce(rng, a, b);
-        new_population.push(mutate(rng, &c, mutation_rate));
-    }
-
-    new_population
-}
-
-fn average_absolute_fitness(target: &Element, population: &[Element]) -> f32 {
-    population
-        .iter()
-        .fold(0.0, |acc, guess| acc + absolute_fitness(target, guess))
-        / population.len() as f32
-}
-
-fn top(target: &Element, population: &[Element], n: usize) -> Vec<Element> {
-    let mut sorted_population = population.to_vec();
-    sorted_population
-        .sort_by_key(|element| -(absolute_fitness(target, element) * 1000.0).round() as i32);
-
-    sorted_population.iter().unique().take(n).cloned().collect()
-}
-
-fn main() {
-    let mut rng = rand::rng();
-
-    let target: Element = Element::from("beepbopskeepskop");
-
-    let population_size = 100;
-    let mating_pool_size = 100;
-    let mutation_rate = 0.001;
-
-    let mut population = (0..population_size)
-        .map(|_| generate(target.len(), &mut rng))
-        .collect::<Vec<_>>();
-
-    for i in 0..1000 {
-        println!(
-            "generation {}. average fitness {}",
-            i,
-            average_absolute_fitness(&target, &population)
-        );
-
-        for element in top(&target, &population, 10) {
-            println!("{}", element);
-        }
-
-        let population_with_fitnesses = population
-            .iter()
-            .map(|element| (element.clone(), absolute_fitness(&target, element)))
-            .collect::<Vec<_>>();
-        // let population_with_relative_fitnesses = normalise_fitnesses(&population_with_fitnesses);
-
-        population = generate_new_population(
-            &mut rng,
-            &population_with_fitnesses,
-            mating_pool_size,
-            population_size,
-            mutation_rate,
-        );
-    }
-
-    println!("final answer {}", population.choose(&mut rng).unwrap());
+    let table = Table::new(state.top_n.iter().map(|a| Row::new([a.clone()])), [30]);
+    frame.render_widget(table, area_3);
 }

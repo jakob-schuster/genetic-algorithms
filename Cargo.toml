@@ -6,3 +6,7 @@ edition = "2024"
 [dependencies]
 rand = "*"
 itertools = "*"
+color-eyre = "*"
+crossterm = "*"
+ratatui = "*"
+clap = "*"
