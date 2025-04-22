@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use genetic::{RenderState, State};
 
+use clap::Parser;
 use color_eyre::Result;
 use crossterm::event::{self, Event};
 use ratatui::{
@@ -12,16 +13,42 @@ use ratatui::{
 
 mod genetic;
 
+#[derive(Parser)]
+pub struct Config {
+    // String to search for
+    #[arg()]
+    string: String,
+
+    // Population size in each generation
+    #[arg(short, long, default_value_t = 200)]
+    population: usize,
+
+    // Factor by which to multiply fitness when generating mating pool
+    #[arg(short = 'f', long, default_value_t = 200)]
+    mating_pool_factor: usize,
+
+    // Rate of random mutations
+    #[arg(short, long, default_value_t = 0.01)]
+    mutation_rate: f32,
+}
+
 fn main() -> Result<()> {
+    let config = Config::parse();
+
     color_eyre::install()?;
     let terminal = ratatui::init();
-    let result = run(terminal);
+    let result = run(terminal, &config);
     ratatui::restore();
     result
 }
 
-fn run(mut terminal: DefaultTerminal) -> Result<()> {
-    let mut state = State::new(&"Hello there good sir.".to_string(), 200, 100, 0.01);
+fn run(mut terminal: DefaultTerminal, config: &Config) -> Result<()> {
+    let mut state = State::new(
+        &config.string,
+        config.population,
+        config.mating_pool_factor,
+        config.mutation_rate,
+    );
 
     loop {
         let state1 = state.update();
@@ -29,16 +56,11 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
         state = state1;
 
         if event::poll(Duration::from_millis(10))? {
-            match event::read()? {
-                Event::FocusGained => {}
-                Event::FocusLost => {}
-                Event::Key(key_event) => match key_event.code {
+            if let Event::Key(key_event) = event::read()? {
+                match key_event.code {
                     event::KeyCode::Char('q') | event::KeyCode::Esc => break Ok(()),
                     _ => {}
-                },
-                Event::Mouse(_) => {}
-                Event::Paste(_) => {}
-                Event::Resize(_, _) => {}
+                }
             }
         }
     }
@@ -78,9 +100,11 @@ fn render(frame: &mut Frame, state: &RenderState) {
             Row::new(["mutation rate:", &mutation_string]),
         ],
         [20, 10],
-    );
+    )
+    .block(Block::new().padding(Padding::proportional(1)));
     frame.render_widget(text, area_2);
 
-    let table = Table::new(state.top_n.iter().map(|a| Row::new([a.clone()])), [30]);
+    let table = Table::new(state.top_n.iter().map(|a| Row::new([a.clone()])), [30])
+        .block(Block::bordered().padding(Padding::proportional(1)));
     frame.render_widget(table, area_3);
 }
